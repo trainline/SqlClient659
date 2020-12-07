@@ -1,0 +1,22 @@
+version: '3.4'
+
+services:
+  sqlclient659:
+    image: ${DOCKER_REGISTRY-}sqlclient659
+    build:
+      context: .
+      dockerfile: Dockerfile${DOTNET_VERSION}
+    depends_on:
+      - "sqlserver"
+    environment:
+      CONNECTION_STRING: "Server=sqlserver;Integrated Security=False;Connect Timeout=5;User Id=sa;Password=6K3w5gO1VNmV;MultiSubnetFailover=true;Max Pool Size=1000${CONNECTION_STRING_SUFFIX}"
+    cap_add:
+      - NET_ADMIN
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:${SQL_VERSION}latest
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_PID=Enterprise
+      - SA_PASSWORD=6K3w5gO1VNmV
+    ports:
+      - 1433:1433
