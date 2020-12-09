@@ -14,52 +14,56 @@ namespace SqlClient659
         private static int _successes;
         private static int _networkErrors;
         private static int _invalidResults;
+        private static int _missingResults;
 
         static async Task Main(string[] args)
         {
+            using var cts = new CancellationTokenSource();
+
             _connectionString = Environment.GetEnvironmentVariable("CONNECTION_STRING");
+
+            Console.CancelKeyPress += new ConsoleCancelEventHandler(CancelExecution);
 
             await InitializeAsync();
 
-            Console.WriteLine("Starting tasks...");
-
-            await ExecuteTestAsync();
+            await ExecuteTestAsync(cts.Token);
 
             Console.WriteLine("Done!");
         }
 
-        private static async Task ExecuteTestAsync()
+        private static async Task ExecuteTestAsync(CancellationToken cancellationToken)
         {
-            using var cts = new CancellationTokenSource();
-            var monitorTask = MonitorAsync(cts.Token);
+            using var monitorCts = new CancellationTokenSource();
+            var monitorTask = MonitorAsync(monitorCts.Token);
 
             var tasks = new Task[4000];
+            Console.WriteLine($"Starting {tasks.Length} tasks...");
 
             for (var i = 0; i < tasks.Length; i++)
             {
-                tasks[i] = ExecuteLoopAsync();
+                tasks[i] = ExecuteLoopAsync(i, cancellationToken);
             }
 
             await Task.WhenAll(tasks);
 
-            cts.Cancel();
+            monitorCts.Cancel();
             await monitorTask;
         }
 
-        private static async Task ExecuteLoopAsync()
+        private static async Task ExecuteLoopAsync(int id, CancellationToken cancellationToken)
         {
-            var random = new Random();
+            await Task.Yield();
 
-            for (var i = 0; i < 200; i++)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                await Task.Yield();
-
-                var id = random.Next();
-
                 try
                 {
                     var result = await ExecuteTransactionAsync(id);
-                    if (result != id)
+                    if (!result.HasValue)
+                    {
+                        Interlocked.Increment(ref _missingResults);
+                    }
+                    else if (result != id)
                     {
                         Interlocked.Increment(ref _invalidResults);
                     }
@@ -75,30 +79,25 @@ namespace SqlClient659
             }
         }
 
-        private static async Task<int> ExecuteTransactionAsync(int id)
+        private static async Task<int?> ExecuteTransactionAsync(int id)
         {
-            var result = -1;
+            int? result = null;
 
-            using var connection = new SqlConnection(_connectionString);
-
+            await using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
-            var tx = connection.BeginTransaction(IsolationLevel.ReadCommitted);
-            var sql = @"select @Id as Id";
 
-            var command = new SqlCommand(sql, connection, tx)
-            {
-                Transaction = tx,
-                CommandTimeout = 1
-            };
+            await using var tx = connection.BeginTransaction(IsolationLevel.ReadCommitted);
+
+            await using var command = new SqlCommand(@"select @Id as Id", connection, tx);
+            command.CommandTimeout = 1;
             command.Parameters.AddWithValue("Id", id);
 
             using (var reader = await command.ExecuteReaderAsync())
             {
-                while (await reader.ReadAsync())
+                if (await reader.ReadAsync())
                 {
                     var columnIndex = reader.GetOrdinal("Id");
                     result = reader.GetInt32(columnIndex);
-                    break;
                 }
             }
 
@@ -156,7 +155,10 @@ namespace SqlClient659
                 var successes = _successes;
                 var networkErrors = _networkErrors;
                 var invalidResults = _invalidResults;
-                Console.WriteLine($"Processed: {successes + networkErrors + invalidResults,6} - Network errors: {networkErrors,6} - Invalid: {invalidResults,6}");
+                var missingResults = _missingResults;
+                int total = successes + networkErrors + invalidResults + missingResults;
+
+                Console.WriteLine($"Processed: {total,6} - Network errors: {networkErrors,6} - Missing: {missingResults, 6} - Invalid: {invalidResults,6}");
             }
         }
 
@@ -188,6 +190,13 @@ namespace SqlClient659
             }
 
             FlushFirewall();
+        }
+
+        private static void CancelExecution(object sender, ConsoleCancelEventArgs args)
+        {
+            // Set the Cancel property to true to prevent the process from terminating.
+            args.Cancel = true;
+            Console.WriteLine("Requested cancellation..");
         }
     }
 }
